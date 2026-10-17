@@ -1,0 +1,51 @@
+name: Monitor
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # GitHub garantiert den Takt nicht; Läufe können verspätet starten
+  workflow_dispatch:
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  collect-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Messpunkte abrufen
+        run: python monitor.py collect
+      - name: Daten committen
+        run: |
+          git config user.name "status-logger"
+          git config user.email "status-logger@users.noreply.github.com"
+          git add data
+          if ! git diff --cached --quiet; then
+            git commit -m "Messdaten $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git pull --rebase
+            git push
+          fi
+      - name: Dashboard bauen
+        run: python monitor.py build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: collect-and-build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

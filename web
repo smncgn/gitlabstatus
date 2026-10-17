@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Status GitLab Server FH Aachen</title>
+<style>
+:root{--bg:#f3f5f7;--ink:#1b2530;--mute:#5d6975;--line:#d6dce2;--up:#2a8a56;--down:#c43c2e;--part:#d4961a;--none:#cbd2d9;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#151a20;--ink:#e5eaef;--mute:#98a4b0;--line:#2a333d;--up:#3fae76;--down:#e2574a;--part:#e0a83a;--none:#38424d}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,"Segoe UI",Roboto,sans-serif}
+main{max-width:920px;margin:0 auto;padding:40px 20px 56px}
+h1{font-size:clamp(1.9rem,5vw,2.9rem);line-height:1.15;margin:0 0 .4rem;letter-spacing:-.02em;font-weight:700}
+h1.up{color:var(--up)}h1.down{color:var(--down)}h1.part{color:var(--part)}
+h2{font-size:1.15rem;margin:0 0 .75rem}
+section{margin-top:2.6rem}
+.mute{color:var(--mute)}.small{font-size:.85rem}
+.warn{color:var(--part);font-weight:600}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin-top:1.8rem}
+.kpis div{padding:14px 16px 14px 0}
+.kpis b{display:block;font-size:1.6rem;font-variant-numeric:tabular-nums}
+.tabs{display:flex;gap:4px;margin-bottom:.6rem}
+.tabs button{font:inherit;color:var(--ink);background:none;border:1px solid var(--line);padding:4px 14px;border-radius:6px;cursor:pointer}
+.tabs button[aria-pressed=true]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+button:focus-visible,summary:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+svg{width:100%;height:auto;display:block}
+.heat{display:grid;grid-template-columns:3.4rem repeat(24,1fr);gap:2px;align-items:center;overflow-x:auto;min-width:0}
+.heat span{font-size:.72rem;color:var(--mute)}
+.heat i{height:20px;border-radius:2px;background:var(--none)}
+.heat i.u{background:var(--up)}.heat i.d{background:var(--down)}.heat i.p{background:var(--part)}
+.key{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px}
+.key i{display:inline-block;width:12px;height:12px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:7px 12px 7px 0;border-bottom:1px solid var(--line)}
+th{font-weight:600;color:var(--mute);font-size:.9rem}
+details{margin-top:2.6rem}summary{cursor:pointer;font-weight:600;margin-bottom:.75rem}
+footer{margin-top:3rem}
+@media (max-width:560px){.heat{min-width:560px}.heatwrap{overflow-x:auto}}
+</style>
+</head>
+<body>
+<main>
+  <h1 id="hero">Daten werden geladen …</h1>
+  <p id="sub" class="mute"></p>
+  <div class="kpis" id="kpis"></div>
+
+  <section>
+    <h2>Verfügbarkeit</h2>
+    <div class="tabs" id="tabs">
+      <button data-m="daily" aria-pressed="true">Tag</button>
+      <button data-m="weekly" aria-pressed="false">Woche</button>
+      <button data-m="monthly" aria-pressed="false">Monat</button>
+    </div>
+    <div id="chart"></div>
+    <p class="mute small" id="chartnote"></p>
+  </section>
+
+  <section>
+    <h2>Zeitverlauf der letzten 14 Tage</h2>
+    <div class="heatwrap"><div class="heat" id="heat"></div></div>
+    <div class="key small mute">
+      <span><i style="background:var(--up)"></i>durchgehend erreichbar</span>
+      <span><i style="background:var(--part)"></i>teilweise gestört</span>
+      <span><i style="background:var(--down)"></i>durchgehend gestört</span>
+      <span><i style="background:var(--none)"></i>keine Daten</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Ausfälle</h2>
+    <div id="outages"></div>
+  </section>
+
+  <details>
+    <summary>Zeiträume ohne Daten</summary>
+    <div id="gaps"></div>
+  </details>
+
+  <footer class="mute small" id="foot"></footer>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const dtf = new Intl.DateTimeFormat("de-DE", {timeZone: "Europe/Berlin", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit"});
+const fdt = iso => dtf.format(new Date(iso)) + " Uhr";
+const num = p => p == null ? "–" : p.toFixed(2).replace(".", ",") + " %";
+const dur = m => m < 60 ? `${m} Min.` : m < 1440 ? `${Math.floor(m / 60)} Std. ${m % 60} Min.` : `${Math.floor(m / 1440)} Tg. ${Math.floor(m % 1440 / 60)} Std.`;
+const minsSince = iso => Math.round((Date.now() - new Date(iso)) / 60000);
+let D, mode = "daily";
+
+const labelOf = {
+  daily: k => `${k.slice(8)}.${k.slice(5, 7)}.`,
+  weekly: k => `KW ${+k.slice(6)}`,
+  monthly: k => new Date(k + "-15").toLocaleDateString("de-DE", {month: "short", year: "2-digit"})
+};
+const titleOf = {
+  daily: k => new Date(k + "T12:00:00").toLocaleDateString("de-DE", {weekday: "short", day: "2-digit", month: "2-digit", year: "numeric"}),
+  weekly: k => `Kalenderwoche ${+k.slice(6)} / ${k.slice(0, 4)}`,
+  monthly: k => new Date(k + "-15").toLocaleDateString("de-DE", {month: "long", year: "numeric"})
+};
+const limit = {daily: 60, weekly: 26, monthly: 24};
+
+function hero() {
+  const s = D.summary, ongoing = D.outages[0] && D.outages[0].ongoing ? D.outages[0] : null;
+  const h = $("hero");
+  if (s.last_status === 1) { h.className = "up"; h.textContent = "GitLab ist erreichbar."; }
+  else if (s.last_status === 3) { h.className = "part"; h.textContent = "GitLab ist in Wartung."; }
+  else { h.className = "down"; h.textContent = ongoing ? `GitLab ist seit ${dur(minsSince(ongoing.start))} nicht erreichbar.` : "GitLab ist nicht erreichbar."; }
+  const age = minsSince(s.last_time);
+  $("sub").innerHTML = `Letzte Messung: ${fdt(s.last_time)}` + (age > 15 ? ` <span class="warn">– vor ${dur(age)}. Das Logging scheint zu stocken.</span>` : "");
+  $("kpis").innerHTML = [["24 Stunden", s.h24], ["7 Tage", s.d7], ["30 Tage", s.d30], [`Gesamt seit ${new Date(s.first_time).toLocaleDateString("de-DE", {timeZone: "Europe/Berlin"})}`, s.total]]
+    .map(([l, v]) => `<div><b>${num(v)}</b><span class="mute small">${l}</span></div>`).join("");
+}
+
+function chart() {
+  const items = D[mode].slice(-limit[mode]), n = items.length;
+  const W = 860, H = 240, L = 46, R = 6, T = 10, B = 28, bw = (W - L - R) / n;
+  const vals = items.filter(i => i.pct != null).map(i => i.pct);
+  const lo = vals.length ? Math.min(95, Math.floor(Math.min(...vals) / 5) * 5) : 0;
+  const y = p => T + (H - T - B) * (1 - (p - lo) / (100 - lo));
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Verfügbarkeit in Prozent">`;
+  [lo, (lo + 100) / 2, 100].forEach(t => {
+    s += `<line x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}" stroke="var(--line)"/><text x="${L - 6}" y="${y(t) + 4}" text-anchor="end" fill="var(--mute)" font-size="11">${t}%</text>`;
+  });
+  const step = Math.ceil(n / 12);
+  items.forEach((it, i) => {
+    const x = L + i * bw + bw * .15, w = bw * .7, base = y(lo), t = titleOf[mode](it.k);
+    if (it.pct == null) s += `<rect x="${x}" y="${base - 3}" width="${w}" height="3" fill="var(--none)"><title>${t}: keine Daten</title></rect>`;
+    else {
+      const h = Math.max(2, base - y(it.pct)), c = it.down === 0 ? "--up" : it.pct >= 95 ? "--part" : "--down";
+      s += `<rect x="${x}" y="${base - h}" width="${w}" height="${h}" rx="1.5" fill="var(${c})"><title>${t}: ${num(it.pct)} (${it.up} von ${it.up + it.down} Messpunkten erreichbar)</title></rect>`;
+    }
+    if (i % step === 0) s += `<text x="${x + w / 2}" y="${H - 8}" text-anchor="middle" fill="var(--mute)" font-size="11">${labelOf[mode](it.k)}</text>`;
+  });
+  $("chart").innerHTML = s + "</svg>";
+  $("chartnote").textContent = `Die Achse beginnt bei ${lo} %. Grün: kein Ausfall, gelb: ab 95 %, rot: darunter. Grauer Strich: keine Daten.`;
+}
+
+function heat() {
+  const [y, m, d] = D.daily[D.daily.length - 1].k.split("-").map(Number);
+  const days = [...Array(14)].map((_, i) => new Date(Date.UTC(y, m - 1, d - 13 + i)).toISOString().slice(0, 10));
+  let h = "<span></span>" + [...Array(24)].map((_, i) => `<span>${i % 3 === 0 ? i : ""}</span>`).join("");
+  days.forEach(day => {
+    h += `<span>${day.slice(8)}.${day.slice(5, 7)}.</span>`;
+    for (let hr = 0; hr < 24; hr++) {
+      const hh = String(hr).padStart(2, "0"), v = D.hourly[`${day}T${hh}`];
+      const c = !v ? "" : v[1] === 0 ? "u" : v[0] === 0 ? "d" : "p";
+      const t = v ? `${day} ${hh}:00 Uhr: ${v[0]} Messpunkte erreichbar, ${v[1]} gestört` : `${day} ${hh}:00 Uhr: keine Daten`;
+      h += `<i class="${c}" title="${t}"></i>`;
+    }
+  });
+  $("heat").innerHTML = h;
+}
+
+function tables() {
+  const row = (a, b, c) => `<tr><td>${a}</td><td>${b}</td><td>${c}</td></tr>`;
+  const head = c => `<tr><th>Beginn</th><th>${c[0]}</th><th>Dauer</th></tr>`;
+  $("outages").innerHTML = D.outages.length
+    ? `<table>${head(["Ende"])}${D.outages.slice(0, 50).map(o => row(fdt(o.start), o.ongoing ? "<b>andauernd</b>" : fdt(o.end), dur(o.minutes))).join("")}</table>`
+      + (D.outages.length > 50 ? `<p class="mute small">Angezeigt: die letzten 50 von ${D.outages.length} Ausfällen.</p>` : "")
+    : `<p class="mute">Bisher keine Ausfälle in den gespeicherten Daten.</p>`;
+  $("gaps").innerHTML = D.gaps.length
+    ? `<table>${head(["Ende"])}${D.gaps.map(g => row(fdt(g.start), fdt(g.end), dur(g.minutes))).join("")}</table>`
+    : `<p class="mute">Keine Lücken größer als ${D.gap_minutes} Minuten.</p>`;
+}
+
+fetch("data.json", {cache: "no-store"}).then(r => r.json()).then(j => {
+  D = j; hero(); chart(); heat(); tables();
+  $("foot").textContent = `Quelle: Uptime Kuma auf status.fh-aachen.de, Zeiten in Europa/Berlin. Verfügbarkeit = Messpunkte mit Status Up geteilt durch Up, Down und Pending; Wartung zählt nicht mit. Abstände zwischen Messpunkten über ${D.gap_minutes} Minuten gelten als „keine Daten“. Dashboard erstellt: ${fdt(D.generated)}.`;
+}).catch(() => { $("hero").textContent = "Daten konnten nicht geladen werden."; });
+
+$("tabs").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b || !D) return;
+  mode = b.dataset.m;
+  document.querySelectorAll("#tabs button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  chart();
+});
+</script>
+</body>
+</html>
